@@ -122,9 +122,10 @@
 #define _osapi_filesys_
 #include <stdio.h>
 #include <stdlib.h>
+#ifndef freeRTOS
 #include <dirent.h>
 #include <sys/stat.h>
-
+#endif
 #define OS_READ_ONLY        0
 #define OS_WRITE_ONLY       1
 #define OS_READ_WRITE       2

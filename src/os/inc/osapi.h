@@ -129,10 +129,12 @@
 ** Include the OS API modules
 */
 #include "osapi-os-core.h"
+#ifndef freeRTOS
 #include "osapi-os-filesys.h"
 #include "osapi-os-net.h"
 #include "osapi-os-loader.h"
 #include "osapi-os-timer.h"
+#endif
 
 /*
  ******************************************************************************
