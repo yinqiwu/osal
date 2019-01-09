@@ -2,7 +2,7 @@
  * @Description: In User Settings Edit
  * @Author: your name
  * @Date: 2018-12-18 15:54:28
- * @LastEditTime: 2019-01-09 14:17:22
+ * @LastEditTime: 2019-01-09 18:09:57
  * @LastEditors: OBKoro1
  */
 
@@ -172,7 +172,7 @@ int32 OS_TaskCreate(uint32 *task_id, const char *task_name,
 
   /* Check to see if the name is already taken */
   for (int i = 0; i < OS_MAX_TASKS; i++) {
-    if ((OS_task_table[i].free == FALSE) &&
+    if ((OS_task_table[i].free == TRUE) &&
         (strcmp((char *)task_name, OS_task_table[i].name) == 0)) {
       OS_InterruptSafeUnlock();
       OSAL_LogD("Duplicate task name");
@@ -196,14 +196,18 @@ int32 OS_TaskCreate(uint32 *task_id, const char *task_name,
                     &OS_task_table[possible_taskid].id) == pdPASS) {
       OS_InterruptSafeLock();
       OS_task_table[possible_taskid].free = TRUE;
+      memcpy(OS_task_table[possible_taskid].name,task_name,strlen(task_name));
+      OS_task_table[possible_taskid].stack_size = stack_size;
+      OS_task_table[possible_taskid].priority = os_priority;
       OS_InterruptSafeUnlock();
       *task_id = possible_taskid;
       OSAL_LogD(
-          "A task was successfully created. The task name is:%s The task ID "
+          "A task was successfully created. The task name is:<%s> The task ID "
           "is:%d "
           "The task stack size is:%d",
-          task_name, possible_taskid, stack_size);
-      return OS_SUCCESS;
+          OS_task_table[possible_taskid].name, possible_taskid,
+          OS_task_table[possible_taskid].stack_size);
+          return OS_SUCCESS;
       }else{
         OSAL_LogD("Create a task failed ");
         return OS_ERROR;
@@ -365,8 +369,70 @@ int32 OS_TaskSetPriority(uint32 task_id, uint32 new_priority){
 
 int32 OS_QueueCreate(uint32 *queue_id, const char *queue_name,
                      uint32 queue_depth, uint32 data_size, uint32 flags){
-  
+      uint32 possible_qid;
+      if (queue_id == 0 || strlen(queue_name) == 0 || queue_depth == 0 ||
+          data_size == 0) {
+        OSAL_LogD("Input parameter error");
+        return OS_INVALID_POINTER;
+      }
 
+      /* we don't want to allow names too long*/
+      /* if truncated, two names might be the same */
+      if (strlen(queue_name) >= OS_MAX_API_NAME) {
+        OSAL_LogD("queue name is too long");
+        return OS_ERR_NAME_TOO_LONG;
+      }
+      /* Check Parameters */
+
+      OS_InterruptSafeLock();
+
+      for (possible_qid = 0; possible_qid < OS_MAX_QUEUES; possible_qid++) {
+        if (OS_queue_table[possible_qid].free == FALSE) {
+          OSAL_LogD("Find a free queue");
+          break;
+        }
+      }
+
+      if (possible_qid >= OS_MAX_QUEUES ||
+          OS_queue_table[possible_qid].free != FALSE) {
+        OSAL_LogD("Available queue not found");
+        OS_InterruptSafeUnlock();
+        return OS_ERR_NO_FREE_IDS;
+      }
+
+      /* Check to see if the name is already taken */
+
+      for (int i = 0; i < OS_MAX_QUEUES; i++) {
+        if ((OS_queue_table[i].free == TRUE) &&
+            strcmp((char *)queue_name, OS_queue_table[i].name) == 0) {
+          OS_InterruptSafeUnlock();
+          return OS_ERR_NAME_TAKEN;
+        }
+      }
+
+      /* Set the possible task Id to not free so that
+       * no other task can try to use it */
+
+      OS_queue_table[possible_qid].free = FALSE;
+
+      OS_InterruptSafeUnlock();
+
+      QueueHandle_t xQueue;
+      OS_queue_table[possible_qid].id = xQueueCreate(queue_depth, data_size);
+      if ( OS_queue_table[possible_qid].id != NULL ){
+        OS_InterruptSafeLock();
+        OS_queue_table[possible_qid].free = TRUE;
+        memcpy(OS_queue_table[possible_qid].name, queue_name,
+               strlen(queue_name));
+        OS_queue_table[possible_qid].queue_length = queue_depth;
+        OS_queue_table[possible_qid].ItemSize = data_size;
+        OS_InterruptSafeUnlock();
+        *queue_id = possible_qid;
+        return OS_SUCCESS;
+       }else{
+         OSAL_LogD("Queue creation failed");
+         return OS_ERROR;
+      }
 }
 
 #if 0
