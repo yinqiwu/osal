@@ -2,7 +2,7 @@
  * @Description: In User Settings Edit
  * @Author: your name
  * @Date: 2018-12-18 15:54:28
- * @LastEditTime: 2018-12-19 13:37:15
+ * @LastEditTime: 2019-01-09 14:17:22
  * @LastEditors: OBKoro1
  */
 
@@ -15,6 +15,24 @@
 #include "queue.h"
 #include "task.h"
 #include "timers.h"
+
+
+#ifdef SIMPLE_LOG
+
+#include "log.h"
+#ifdef LOG_TAG
+#undef LOG_TAG
+#define LOG_TAG "OSAL"
+#else
+#define LOG_TAG "OSAL"
+#endif
+
+#define OSAL_LogI Logi
+#define OSAL_LogD Logd
+#define OSAL_LogW Logw
+#define OSAL_LogE Loge
+
+#endif
 
 #define MAX_PRIORITY 255
 
@@ -30,8 +48,18 @@ typedef struct {
   StaticTask_t xTaskBuffer;
 } OS_task_internal_record_t;
 
+/* queues */
+typedef struct {
+  int free;
+  QueueHandle_t id;
+  UBaseType_t queue_length;
+  UBaseType_t ItemSize;
+  char name[OS_MAX_API_NAME];
+} OS_queue_internal_record_t;
+
 OS_task_internal_record_t OS_task_table[OS_MAX_TASKS];
 
+OS_queue_internal_record_t OS_queue_table[OS_MAX_QUEUES];
 /*----------------------------------------------------------------------------
  * Name: OS_PriorityRemap
  *
@@ -45,9 +73,16 @@ int32 OS_PriorityRemap(uint32 InputPri) {
   return InputPri;
 }
 
-int OS_InterruptSafeLock(void) { return 0; }
+int OS_InterruptSafeLock(void) {
+  portDISABLE_INTERRUPTS();
+  
+  return 0;
+}
 
-int OS_InterruptSafeUnlock(void) { return 0; }
+int OS_InterruptSafeUnlock(void) {
+  portENABLE_INTERRUPTS();
+  return 0;
+}
 
 /* Task to be created. */
 void vTaskCode(void *pvParameters){
@@ -58,17 +93,36 @@ void vTaskCode(void *pvParameters){
 }
 
 /*---------------------------------------------------------------------------------------
-   Name: OS_TaskCreate
+   Name: OS_API_Init
 
-   Purpose: Creates a task and starts running it.
+   Purpose: Initialize the tables that the OS API uses to keep track of
+information about objects
 
-   returns: OS_INVALID_POINTER if any of the necessary pointers are NULL
+   returns: OS_SUCCESS or OS_ERROR
+---------------------------------------------------------------------------------------*/
+int32 OS_API_Init(void) { 
+  
+  memset(OS_task_table, 0, sizeof(OS_task_table));
+  memset(OS_queue_table, 0, sizeof(OS_queue_table));
+  OSAL_LogI("OSAL initialization succeeded ");
+  return OS_SUCCESS;
+}
+
+/*---------------------------------------------------------------------------------------
+    Name: OS_TaskCreate
+
+    Purpose: Creates a task and starts running it.
+
+    returns: OS_INVALID_POINTER if any of the necessary pointers are NULL
             OS_ERR_NAME_TOO_LONG if the name of the task is too long to be
 copied OS_ERR_INVALID_PRIORITY if the priority is bad OS_ERR_NO_FREE_IDS if
 there can be no more tasks created OS_ERR_NAME_TAKEN if the name specified
 is already used by a task OS_ERROR if the operating system calls fail
 OS_SUCCESS if success
             
+
+
+
 NOTES: task_id is passed back to the user as the ID. stack_pointer is
 usually null. the flags parameter is unused.
 
@@ -80,16 +134,19 @@ int32 OS_TaskCreate(uint32 *task_id, const char *task_name,
   int possible_taskid;
   /* Check for NULL pointers */
   if ((task_name == NULL) || (function_pointer == NULL) || (task_id == NULL)) {
+    OSAL_LogD("Invaild Parameter");
     return OS_INVALID_POINTER;
   }
   /* we don't want to allow names too long*/
   /* if truncated, two names might be the same */
   if (strlen(task_name) >= OS_MAX_API_NAME) {
+    OSAL_LogD("Task name is too long");
     return OS_ERR_NAME_TOO_LONG;
   }
 
   /* Check for bad priority */
   if (priority > MAX_PRIORITY) {
+    OSAL_LogD("Priority setting error");
     return OS_ERR_INVALID_PRIORITY;
   }
 
@@ -99,15 +156,17 @@ int32 OS_TaskCreate(uint32 *task_id, const char *task_name,
   OS_InterruptSafeLock();
 
   for (possible_taskid = 0; possible_taskid < OS_MAX_TASKS; possible_taskid++) {
-    if (OS_task_table[possible_taskid].free == TRUE) {
+    if (OS_task_table[possible_taskid].free == FALSE) {
+      OSAL_LogI("Found an idle task storage space");
       break;
     }
   }
 
   /* Check to see if the id is out of bounds */
   if (possible_taskid >= OS_MAX_TASKS ||
-      OS_task_table[possible_taskid].free != TRUE) {
+      OS_task_table[possible_taskid].free != FALSE) {
     OS_InterruptSafeUnlock();
+    OSAL_LogI("No idle task storage space found");
     return OS_ERR_NO_FREE_IDS;
   }
 
@@ -116,6 +175,7 @@ int32 OS_TaskCreate(uint32 *task_id, const char *task_name,
     if ((OS_task_table[i].free == FALSE) &&
         (strcmp((char *)task_name, OS_task_table[i].name) == 0)) {
       OS_InterruptSafeUnlock();
+      OSAL_LogD("Duplicate task name");
       return OS_ERR_NAME_TAKEN;
     }
   }
@@ -138,8 +198,14 @@ int32 OS_TaskCreate(uint32 *task_id, const char *task_name,
       OS_task_table[possible_taskid].free = TRUE;
       OS_InterruptSafeUnlock();
       *task_id = possible_taskid;
+      OSAL_LogD(
+          "A task was successfully created. The task name is:%s The task ID "
+          "is:%d "
+          "The task stack size is:%d",
+          task_name, possible_taskid, stack_size);
       return OS_SUCCESS;
       }else{
+        OSAL_LogD("Create a task failed ");
         return OS_ERROR;
       }
   }
@@ -180,14 +246,19 @@ int32 OS_TaskDelete(uint32 task_id){
   possible_taskid = task_id;
   OS_InterruptSafeUnlock();
   if (possible_taskid > OS_MAX_TASKS && OS_task_table[possible_taskid].free != TRUE){
+    OSAL_LogD("No matching task ID found");
     return OS_ERROR;
   }
   vTaskDelete(OS_task_table[possible_taskid].id);
+  OSAL_LogD("%s will be deleted,task id = %d",
+            OS_task_table[possible_taskid].name,
+            possible_taskid);
   OS_InterruptSafeLock();
   memset(&OS_task_table[possible_taskid], 0,
          sizeof(OS_task_table[possible_taskid]));
   OS_InterruptSafeUnlock();
-return OS_SUCCESS;
+  
+  return OS_SUCCESS;
 }
 
 /*--------------------------------------------------------------------------------------
@@ -205,6 +276,8 @@ void OS_TaskExit(void) {
   OS_InterruptSafeLock();
   for (possible_taskid = 0; possible_taskid < OS_MAX_TASKS; possible_taskid++) {
     if (OS_task_table[possible_taskid].id == CurrentTaskHandle) {
+      OSAL_LogD("%s will be deleted,task id = %d",
+                OS_task_table[possible_taskid].name, possible_taskid);
       memset(&OS_task_table[possible_taskid], 0,
              sizeof(OS_task_table[possible_taskid]));
     }
@@ -232,6 +305,7 @@ uint32 OS_TaskGetId(void){
     }
   }
   OS_InterruptSafeUnlock();
+  OSAL_LogD("Task id = %d", id);
   return id;
 }
 
@@ -269,6 +343,7 @@ int32 OS_TaskGetIdByName(uint32 *task_id, const char *task_name){
          possible_taskid++) {
       if (OS_task_table[possible_taskid].id == TaskHandle) {
         *task_id = possible_taskid;  //
+        OSAL_LogD("%s Task id = %d", task_name, possible_taskid);
         ret = OS_SUCCESS;
         break;
       }
@@ -280,12 +355,26 @@ int32 OS_TaskGetIdByName(uint32 *task_id, const char *task_name){
   return ret;
 }
 
+int32 OS_TaskSetPriority(uint32 task_id, uint32 new_priority){
+  if (task_id > OS_MAX_TASKS || new_priority > configMAX_PRIORITIES) {
+    return OS_ERROR;
+  }
+  vTaskPrioritySet(OS_task_table[task_id].id, new_priority);
+  return OS_SUCCESS;
+}
+
+int32 OS_QueueCreate(uint32 *queue_id, const char *queue_name,
+                     uint32 queue_depth, uint32 data_size, uint32 flags){
+  
+
+}
+
 #if 0
 
 
 int32 OS_TaskInstallDeleteHandler(osal_task_entry function_pointer);
 
-int32 OS_TaskSetPriority(uint32 task_id, uint32 new_priority);
+
 int32 OS_TaskRegister(void);
 
 int32 OS_TaskGetInfo(uint32 task_id, OS_task_prop_t *task_prop);
@@ -297,8 +386,7 @@ int32 OS_TaskGetInfo(uint32 task_id, OS_task_prop_t *task_prop);
 /*
 ** Queue Create now has the Queue ID returned to the caller.
 */
-int32 OS_QueueCreate(uint32 *queue_id, const char *queue_name,
-                     uint32 queue_depth, uint32 data_size, uint32 flags);
+
 int32 OS_QueueDelete(uint32 queue_id);
 int32 OS_QueueGet(uint32 queue_id, void *data, uint32 size, uint32 *size_copied,
                   int32 timeout);
