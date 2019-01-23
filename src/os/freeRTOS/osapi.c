@@ -2,7 +2,7 @@
  * @Description: In User Settings Edit
  * @Author: your name
  * @Date: 2018-12-18 15:54:28
- * @LastEditTime: 2019-01-09 18:09:57
+ * @LastEditTime: 2019-01-23 20:29:46
  * @LastEditors: OBKoro1
  */
 
@@ -367,6 +367,27 @@ int32 OS_TaskSetPriority(uint32 task_id, uint32 new_priority){
   return OS_SUCCESS;
 }
 
+/*
+** Message Queue API
+*/
+
+/*
+** Queue Create now has the Queue ID returned to the caller.
+*/
+/*---------------------------------------------------------------------------------------
+   Name: OS_QueueCreate
+
+   Purpose: Create a message queue which can be refered to by name or ID
+
+   Returns: OS_INVALID_POINTER if a pointer passed in is NULL
+            OS_ERR_NAME_TOO_LONG if the name passed in is too long
+            OS_ERR_NO_FREE_IDS if there are already the max queues created
+            OS_ERR_NAME_TAKEN if the name is already being used on another queue
+            OS_ERROR if the OS create call fails
+            OS_SUCCESS if success
+
+   Notes: the flags parameter is unused.
+---------------------------------------------------------------------------------------*/
 int32 OS_QueueCreate(uint32 *queue_id, const char *queue_name,
                      uint32 queue_depth, uint32 data_size, uint32 flags){
       uint32 possible_qid;
@@ -387,6 +408,7 @@ int32 OS_QueueCreate(uint32 *queue_id, const char *queue_name,
       OS_InterruptSafeLock();
 
       for (possible_qid = 0; possible_qid < OS_MAX_QUEUES; possible_qid++) {
+        /*find an idle queue free*/
         if (OS_queue_table[possible_qid].free == FALSE) {
           OSAL_LogD("Find a free queue");
           break;
@@ -435,6 +457,151 @@ int32 OS_QueueCreate(uint32 *queue_id, const char *queue_name,
       }
 }
 
+/*--------------------------------------------------------------------------------------
+    Name: OS_QueueDelete
+
+    Purpose: Deletes the specified message queue.
+
+    Returns: OS_ERR_INVALID_ID if the id passed in does not exist
+             OS_ERROR if the OS call to delete the queue fails
+             OS_SUCCESS if success
+
+    Notes: If There are messages on the queue, they will be lost and any
+subsequent calls to QueueGet or QueuePut to this queue will result in errors
+---------------------------------------------------------------------------------------*/
+int32 OS_QueueDelete(uint32 queue_id){
+  if(queue_id >= OS_MAX_QUEUES){
+    OSAL_LogD("Find a free queue");
+    return OS_QUEUE_ID_ERROR;
+  }
+  OS_InterruptSafeLock();
+  if (OS_queue_table[queue_id].id != 0){
+    vQueueDelete(OS_queue_table[queue_id].id);
+    memset(&OS_queue_table[queue_id], 0, sizeof(OS_queue_internal_record_t));
+  }
+  OS_InterruptSafeUnlock();
+  return OS_SUCCESS;
+}
+/*---------------------------------------------------------------------------------------
+ Name: OS_QueueGet
+ 
+ Purpose: Receive a message on a message queue.  Will pend or timeout on the
+ receive. Returns: OS_ERR_INVALID_ID if the given ID does not exist
+ OS_ERR_INVALID_POINTER if a pointer passed in is NULL
+ OS_QUEUE_EMPTY if the Queue has no messages on it to be recieved
+ OS_QUEUE_TIMEOUT if the timeout was OS_PEND and the time expired
+ OS_QUEUE_INVALID_SIZE if the size of the buffer passed in is not big enough for
+ the maximum size message OS_SUCCESS if success
+ ---------------------------------------------------------------------------------------*/
+int32 OS_QueueGet(uint32 queue_id, void *data, uint32 size, uint32 *size_copied,
+                  int32 timeout){
+  
+  if(queue_id >= OS_MAX_QUEUES || data == 0 || size == 0 || size_copied == 0){
+    OSAL_LogD("Queue read data parameter error");
+    return OS_QUEUE_ID_ERROR;
+  }
+  OS_InterruptSafeLock();
+  QueueHandle_t xQueue = OS_queue_table[queue_id].id;
+  UBaseType_t ItemSize = OS_queue_table[queue_id].ItemSize;
+  OS_InterruptSafeUnlock();
+  if (size < ItemSize){
+    OSAL_LogD("Queue read data parameter error");
+    return OS_QUEUE_ID_ERROR;
+  } 
+  BaseType_t IsInterrupt = xPortIsInsideInterrupt();
+  if (IsInterrupt){
+    BaseType_t queue_valid = xQueueReceiveFromISR(xQueue, data, 0);
+    if (queue_valid){
+      *size_copied = ItemSize;
+      OSAL_LogI("Successfully read data from the queue");
+      return OS_SUCCESS;
+    }else{
+      OSAL_LogI("Queue data is empty");
+      return OS_QUEUE_EMPTY;
+    }
+  }else{
+    BaseType_t queue_valid = xQueueReceive(xQueue, data, timeout);
+    if (queue_valid){
+      *size_copied = ItemSize;
+      OSAL_LogI("Successfully read data from the queue");
+      return OS_SUCCESS;
+    }else{
+      OSAL_LogI("Queue data is empty");
+      return OS_QUEUE_EMPTY;
+    }
+  } 
+  
+}
+/*---------------------------------------------------------------------------------------
+ Name: OS_QueuePut
+ 
+ Purpose: Put a message on a message queue.
+ 
+
+ Returns: OS_ERR_INVALID_ID if the queue id passed in is not a valid queue
+ OS_INVALID_POINTER if the data pointer is NULL
+ OS_QUEUE_FULL if the queue cannot accept another message
+ OS_ERROR if the OS call returns an error
+ OS_SUCCESS if SUCCESS
+ 
+
+ Notes: The flags parameter is not used.  The message put is always configured
+ to immediately return an error if the receiving message queue is full.
+ ---------------------------------------------------------------------------------------*/
+int32 OS_QueuePut(uint32 queue_id, const void *data, uint32 size, uint32 flags){
+  if (queue_id >= OS_MAX_QUEUES || data == 0 ) {
+    OSAL_LogD("Queue read data parameter error");
+    return OS_QUEUE_ID_ERROR;
+  }
+  OS_InterruptSafeLock();
+  QueueHandle_t xQueue = OS_queue_table[queue_id].id;
+  UBaseType_t ItemSize = OS_queue_table[queue_id].ItemSize;
+  OS_InterruptSafeUnlock();
+
+  BaseType_t IsInterrupt = xPortIsInsideInterrupt();
+  if (IsInterrupt) {
+    BaseType_t queue_valid = xQueueSendFromISR(xQueue, data, 0);
+    if (queue_valid) {
+      OSAL_LogI("Successfully save data to the queue");
+      return OS_SUCCESS;
+    } else {
+      OSAL_LogI("Queue data is full");
+      return OS_QUEUE_FULL;
+    }
+  } else {
+    BaseType_t queue_valid = xQueueSend(xQueue, data, 0);
+    if (queue_valid) {
+      OSAL_LogI("Successfully save data to the queue");
+      return OS_SUCCESS;
+    } else {
+      OSAL_LogI("Queue data is full");
+      return OS_QUEUE_FULL;
+    }
+  }
+}
+
+int32 OS_QueueGetIdByName(uint32 *queue_id, const char *queue_name){
+  if (queue_name == 0 || queue_id == 0){
+    OSAL_LogD("Queue parameter error");
+    return OS_QUEUE_ID_ERROR;
+  }
+  OS_InterruptSafeLock();
+  for (int i = 0; i < OS_MAX_QUEUES; i++) {
+    if ((OS_queue_table[i].free == TRUE) &&
+        strcmp((char *)queue_name, OS_queue_table[i].name) == 0) {
+      *queue_id = i;
+      OS_InterruptSafeUnlock();
+      return OS_SUCCESS;
+    }
+  }
+  OS_InterruptSafeUnlock();
+  return OS_QUEUE_ID_ERROR;
+}
+
+int32 OS_QueueGetInfo(uint32 queue_id, OS_queue_prop_t *queue_prop){
+  return OS_ERROR;
+}
+
 #if 0
 
 
@@ -445,20 +612,12 @@ int32 OS_TaskRegister(void);
 
 int32 OS_TaskGetInfo(uint32 task_id, OS_task_prop_t *task_prop);
 
-/*
-** Message Queue API
-*/
 
-/*
-** Queue Create now has the Queue ID returned to the caller.
-*/
 
-int32 OS_QueueDelete(uint32 queue_id);
-int32 OS_QueueGet(uint32 queue_id, void *data, uint32 size, uint32 *size_copied,
-                  int32 timeout);
-int32 OS_QueuePut(uint32 queue_id, const void *data, uint32 size, uint32 flags);
-int32 OS_QueueGetIdByName(uint32 *queue_id, const char *queue_name);
-int32 OS_QueueGetInfo(uint32 queue_id, OS_queue_prop_t *queue_prop);
+
+
+
+
 
 /*
 ** Semaphore API
